@@ -8341,6 +8341,16 @@
         "missingEndpoint": "Enter the BrainClaw NewAPI URL.",
         "advancedEnabled": "Advanced custom LLM is enabled."
       },
+      "understanding": {
+        "title": "Understanding model",
+        "description": "Use your connected ChatGPT plan for selected analysis features. Choose a model with image support for image analysis.",
+        "style_analysis": "Reference-image style",
+        "image_reverse_prompt": "Freezone image-to-prompt",
+        "scene_headings": "Episode scene headings",
+        "unavailable": "ChatGPT plan is unavailable. Clear all selections and save to use the configured channels.",
+        "save": "Save understanding settings",
+        "saved": "Understanding settings saved."
+      },
       "agent": {
         "title": "Agent model",
         "description": "Configure the model used by Xia Director independently from image, video, audio, and embedding channels.",

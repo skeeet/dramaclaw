@@ -12,11 +12,13 @@ from pydantic_ai import Agent
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from novelvideo.brainclaw_contract import BrainClawProfile
+from novelvideo.chat.chatgpt_plan import PlanError
 from novelvideo.config import (
     get_newapi_structured_output_model_settings,
     get_newapi_text_pydantic_model,
 )
 from novelvideo.model_gateway_runtime import model_gateway_output_retries
+from novelvideo.model_understanding import PlanModel
 from novelvideo.models import (
     NovelProp,
     NovelScene,
@@ -427,6 +429,7 @@ class AssetCompiler:
         # structured callers pass SQLiteStore directly.
         self.store = getattr(cognee_store, "sqlite_store", cognee_store)
         self.spine_template = "drama"
+        self.scene_heading_plan: PlanModel | None = None
 
     async def _write_menus(
         self, episode_number: int, *, only_if_empty: bool = False, **menus: Any
@@ -716,7 +719,10 @@ class AssetCompiler:
                     time_of_day_hint=block.time_of_day,
                     interior_exterior_hint=block.interior_exterior,
                     context_lines=block.lines,
+                    **({"understanding_plan": self.scene_heading_plan} if self.scene_heading_plan is not None else {}),
                 )
+            except PlanError:
+                raise
             except Exception as exc:
                 log(f"  第 {index} 个场景头 AI 规范化失败: {exc}")
                 raise ValueError(f"第 {index} 个场景头 AI 规范化失败，请重试") from exc

@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { ChatGPTPlanPanel, useChatGPTPlan } from "@/components/settings/chatgpt-plan";
+import { UnderstandingPlanPanel } from "@/components/settings/understanding-plan";
 import { Input } from "@/components/ui/input";
 import {
   ChannelModelInput,
@@ -604,6 +605,9 @@ function ModelConfigSection({ open }: { open: boolean }) {
       ) : null}
 
       <AgentLlmPanel config={config} loading={loading} />
+      {config?.understanding && (config.agent?.chatgptPlanAvailable || config.understanding.features.length) ? (
+        <UnderstandingPlanPanel saved={config.understanding} available={Boolean(config.agent?.chatgptPlanAvailable)} />
+      ) : null}
 
       <Tabs
         className="mt-4"

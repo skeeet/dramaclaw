@@ -139,6 +139,10 @@ async def _run_episode_asset_planner(
         update(log=message)
 
     if asset_kind == "scene":
+        from novelvideo.model_understanding import PlanModel
+
+        if payload.get("understanding_plan") is not None:
+            compiler.scene_heading_plan = PlanModel.from_task(payload["understanding_plan"])
         scene_menu, new_count = await compiler.compile_episode_scenes(
             episode_obj,
             on_log=on_log,

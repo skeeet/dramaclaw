@@ -9547,6 +9547,7 @@ def _start_freezone_image_reverse_prompt_task(
     instruction: str = "",
     canvas_id: str | None = None,
     node_id: str | None = None,
+    understanding_plan: Any = None,
 ) -> None:
     task_type = "freezone_image_reverse_prompt"
     task_manager = get_task_manager()
@@ -9582,6 +9583,7 @@ def _start_freezone_image_reverse_prompt_task(
             prompt = await reverse_prompt_from_image(
                 image_path=source_path,
                 instruction=instruction,
+                **({"understanding_plan": understanding_plan} if understanding_plan else {}),
             )
             out = _image_reverse_prompt_output_path(project_dir, job_id)
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -10623,11 +10625,13 @@ async def freezone_image_reverse_prompt(
     project: str,
     body: FreezoneImageReversePromptRequest,
     user: dict = Depends(get_api_user),
+    request: Request = None,
 ):
     """图片处理：异步反推图片提示词。"""
     from novelvideo.api.routes.model_credits import (
         freezone_image_reverse_prompt_task_billing,
     )
+    from novelvideo.model_understanding import IMAGE_REVERSE_PROMPT, plan_for_request
 
     ctx, username, project_name, project_dir, _output_dir = (
         await _resolve_freezone_project(project, user)
@@ -10639,11 +10643,19 @@ async def freezone_image_reverse_prompt(
     if not source_path.exists():
         raise HTTPException(404, f"source not found: {source_path}")
     instruction = body.instruction.strip() or DEFAULT_IMAGE_REVERSE_PROMPT_INSTRUCTION
-    billable_chars = count_billable_text_chars(instruction)
-
+    understanding_plan = await plan_for_request(IMAGE_REVERSE_PROMPT, request)
     try:
         job_id = _new_job_id()
         if ctx is not None:
+            if understanding_plan:
+                model_options = {"understanding_plan": understanding_plan.task_payload()}
+            else:
+                billable_chars = count_billable_text_chars(instruction)
+                model_options = {"billing": freezone_image_reverse_prompt_task_billing({
+                    "operation": "image_reverse_prompt",
+                    "billable_chars": billable_chars,
+                    "pricing_quantity": billable_chars,
+                })}
             return await _enqueue_freezone_background_job(
                 ctx=ctx,
                 project_dir=project_dir,
@@ -10654,13 +10666,7 @@ async def freezone_image_reverse_prompt(
                     "instruction": instruction,
                     "canvas_id": body.canvas_id or "",
                     "node_id": body.node_id or "",
-                    "billing": freezone_image_reverse_prompt_task_billing(
-                        {
-                            "operation": "image_reverse_prompt",
-                            "billable_chars": billable_chars,
-                            "pricing_quantity": billable_chars,
-                        }
-                    ),
+                    **model_options,
                 },
             )
         _start_freezone_image_reverse_prompt_task(
@@ -10672,6 +10678,7 @@ async def freezone_image_reverse_prompt(
             instruction=instruction,
             canvas_id=body.canvas_id or None,
             node_id=body.node_id or None,
+            **({"understanding_plan": understanding_plan} if understanding_plan else {}),
         )
     except RuntimeError as exc:
         _handle_task_start_runtime_error("reverse prompt failed", exc)

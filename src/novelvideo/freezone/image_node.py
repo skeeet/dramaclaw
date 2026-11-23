@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from novelvideo.freezone.vision_gateway import (
     FREEZONE_IMAGE_REVERSE_PROMPT_TIMEOUT_SECONDS,
@@ -12,6 +13,9 @@ from novelvideo.freezone.vision_gateway import (
 )
 from novelvideo.egress_context import TrustedEgressContext
 from novelvideo.official_defaults import DEFAULT_FREEZONE_VISION_MODEL
+
+if TYPE_CHECKING:
+    from novelvideo.model_understanding import PlanModel
 
 DEFAULT_IMAGE_REVERSE_PROMPT_INSTRUCTION = (
     "根据图片生成结构化中文提示词，包括主体描述、环境、光影、镜头语言、风格关键词。"
@@ -40,8 +44,41 @@ async def reverse_prompt_from_image(
     image_path: Path,
     instruction: str = "",
     egress_context: TrustedEgressContext | None = None,
+    understanding_plan: PlanModel | None = None,
 ) -> str:
     prompt = build_image_reverse_prompt_task(instruction)
+    if understanding_plan is not None:
+        from novelvideo.chat.chatgpt_plan import PlanError
+        from novelvideo.freezone.vision_gateway import load_compact_vision_inputs
+        from novelvideo.model_understanding import respond
+
+        if egress_context is not None:
+            raise PlanError("unavailable", "ChatGPT plan understanding requires local DramaClaw.")
+        images = await load_compact_vision_inputs([image_path])
+        if not images:
+            raise PlanError("invalid_image", "The source image could not be read for ChatGPT understanding.")
+        prompt_text = await respond(
+            understanding_plan, prompt, images=[(image.data, image.media_type) for image in images],
+            timeout=FREEZONE_IMAGE_REVERSE_PROMPT_TIMEOUT_SECONDS,
+        )
+        return _clean_reverse_prompt(prompt_text)
+    return await _reverse_prompt_with_gateway(image_path, prompt, egress_context)
+
+
+def _clean_reverse_prompt(prompt_text: str) -> str:
+    prompt_text = prompt_text.strip()
+    if prompt_text.startswith("```"):
+        prompt_text = "\n".join(
+            line for line in prompt_text.splitlines() if not line.strip().startswith("```")
+        ).strip()
+    if not prompt_text:
+        raise RuntimeError("reverse prompt model returned empty prompt")
+    return prompt_text
+
+
+async def _reverse_prompt_with_gateway(
+    image_path: Path, prompt: str, egress_context: TrustedEgressContext | None,
+) -> str:
     image_bytes = image_path.read_bytes()
     from novelvideo.freezone.presets import (
         complete_freezone_vision_egress,
@@ -66,12 +103,6 @@ async def reverse_prompt_from_image(
         timeout_seconds=FREEZONE_IMAGE_REVERSE_PROMPT_TIMEOUT_SECONDS,
         transport_context=vision_egress.transport_context if vision_egress else None,
     )
-    prompt_text = prompt_text.strip()
-    if prompt_text.startswith("```"):
-        prompt_text = "\n".join(
-            line for line in prompt_text.splitlines() if not line.strip().startswith("```")
-        ).strip()
-    if not prompt_text:
-        raise RuntimeError("reverse prompt model returned empty prompt")
+    prompt_text = _clean_reverse_prompt(prompt_text)
     await complete_freezone_vision_egress(vision_egress, result=prompt_text)
     return prompt_text

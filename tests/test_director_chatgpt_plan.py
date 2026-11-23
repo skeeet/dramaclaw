@@ -236,6 +236,7 @@ def test_plan_model_catalog_lists_supported_efforts(tmp_path, monkeypatch):
     assert session.models() == [{
         "id": "gpt-6.2-sol", "label": "GPT-6.2-Sol", "reasoningEfforts": ["low", "medium", "max"],
         "defaultReasoningEffort": "medium",
+        "supportsImages": False,
     }]
 
 

@@ -958,6 +958,12 @@ async def quote_generation_credit_cost(
     mode_key: str = "",
     image_role: str = "",
 ) -> dict:
+    if kind == "feature" and value in {"mainline.style_analysis", "freezone.image_reverse_prompt"}:
+        from novelvideo.model_understanding import uses_plan_billing
+
+        if uses_plan_billing(value):
+            return {"ok": True, "data": {"cost": 0, "display": "ChatGPT plan"}}
+
     model = _generation_credit_cost_model(kind, value)
     if not model:
         raise HTTPException(

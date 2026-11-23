@@ -141,7 +141,7 @@ vi.mock("react-i18next", async () => {
         sharedCount?: number;
       },
     ) =>
-      key.startsWith("settings.modelConfig.agent.chatgpt.")
+      key.startsWith("settings.modelConfig.agent.chatgpt.") || key.startsWith("settings.modelConfig.understanding.")
         ? enT(key, options)
         : key.startsWith("settings.mediaStorage.errors.")
         ? (localeState.language === "en" ? enT : zhT)(key, options)
@@ -808,6 +808,58 @@ describe("SettingsDialog pages", () => {
       fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
       await screen.findByText("ChatGPT is disconnected.");
       expect(requests).toContain("sign-out");
+    } finally {
+      getMock.mockRestore();
+      postMock.mockRestore();
+    }
+  });
+
+  it("opts a standalone image feature into a vision-capable ChatGPT plan model", async () => {
+    const gateway = { source: "official", baseUrl: "https://relay.example/v1", apiKeyPreview: "", configured: false };
+    modelGatewayMocks.config = {
+      mode: "official",
+      effective: gateway,
+      llmEffective: { ...gateway, mode: "official", model: "brainclaw", brainclaw: true },
+      official: { ...gateway, environment: gateway },
+      custom: { ...gateway, llmMode: "advanced" },
+      agent: { mode: "inherit", baseUrl: "", apiKeyPreview: "", configured: false, model: "", chatgptPlanAvailable: true },
+      understanding: { features: [], model: "", reasoningEffort: "" },
+    };
+    const getMock = vi.spyOn(api, "get").mockImplementation((url) => ({
+      json: async () => ({
+        ok: true,
+        data: String(url).endsWith("/models")
+          ? [
+              { id: "text-model", label: "Text Only", reasoningEfforts: ["low"], supportsImages: false },
+              { id: "vision-model", label: "Vision Model", reasoningEfforts: ["low", "high"], supportsImages: true },
+            ]
+          : {
+              status: "connected", sharing: true, activeProfileId: "profile",
+              profiles: [{ id: "profile", label: "Connection 1", email: "" }], message: null,
+            },
+      }),
+    }) as ReturnType<typeof api.get>);
+    const postMock = vi.spyOn(api, "post").mockImplementation(() => ({
+      json: async () => ({ ok: true }),
+    }) as ReturnType<typeof api.post>);
+    try {
+      renderSettingsDialog();
+      const details = screen.getByText("Understanding model", { selector: "summary" }).closest("details")!;
+      details.open = true;
+      fireEvent(details, new Event("toggle"));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Freezone image-to-prompt" }));
+      await screen.findByRole("option", { name: "Vision Model" });
+      expect(screen.queryByRole("option", { name: "Text Only" })).not.toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "vision-model" } });
+      fireEvent.change(screen.getByLabelText("Reasoning effort"), { target: { value: "high" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save understanding settings" }));
+      await waitFor(() => expect(postMock).toHaveBeenCalledWith(
+        "api/v1/model-gateway/agent/chatgpt-plan/understanding",
+        expect.objectContaining({ json: {
+          features: ["image_reverse_prompt"], model: "vision-model", reasoningEffort: "high",
+        } }),
+      ));
+      expect(modelGatewayMocks.saveAgent).not.toHaveBeenCalled();
     } finally {
       getMock.mockRestore();
       postMock.mockRestore();

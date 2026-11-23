@@ -21,6 +21,8 @@ Enable the intended mode after configuring it. New jobs read the latest mode, ke
 
 Xia Director can follow the active gateway, use an independent third-party endpoint, or use an eligible ChatGPT plan. For **Third party**, enter an OpenAI-compatible base URL, API key, and model that supports the Responses API and tool calls. Script generation outside Director, embeddings, image, audio, video, and ComfyUI use their configured providers.
 
+Secrets remain in the local CE settings database and are returned to the browser only as a masked preview. Changing the third-party endpoint requires entering the API Key again, which prevents a saved credential from being sent to a different host accidentally. Select **Follow current channel** to restore the existing Official, Custom, or Hybrid routing behavior.
+
 ### ChatGPT plan
 
 ChatGPT plan is available in local Community Edition with the DramaClaw Codex runtime. For a source checkout, start both services on loopback with `NOVELVIDEO_API_HOST=127.0.0.1 SUPERTALE_FE_HOST=127.0.0.1 bash scripts/start-ce.sh` and open the frontend at `http://127.0.0.1:5173`.
@@ -32,7 +34,11 @@ ChatGPT plan is available in local Community Edition with the DramaClaw Codex ru
 
 ChatGPT plan uses eligible plan allowance and any credits you permit for DramaClaw. Review those permissions in [ChatGPT usage settings](https://chatgpt.com/settings/usage). When access expires, sign in again. If a usage limit is reached, Director stops and shows the plan error.
 
-Secrets remain in the local CE settings database and are returned to the browser only as a masked preview. Changing the third-party endpoint requires entering the API Key again, which prevents a saved credential from being sent to a different host accidentally. Select **Follow current channel** to restore the existing Official, Custom, or Hybrid routing behavior.
+### Understanding model
+
+In local Community Edition, open **Settings → Models & Channels → Understanding model** to use the same connected ChatGPT account for reference-image style analysis, Freezone image-to-prompt, or episode scene-heading analysis. Select the features, choose a model and reasoning effort, and save. Image features require a model that accepts images. Clear all selections and save to return those features to their channel mappings.
+
+Episode scene planning uses this setting for scene-heading analysis. It may also use configured feature-model channels for other planning steps. A failed ChatGPT plan analysis reports the error without falling back to a gateway.
 
 ## Official mode
 

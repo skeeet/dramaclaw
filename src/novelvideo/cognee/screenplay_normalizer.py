@@ -319,6 +319,7 @@ async def normalize_screenplay_scene_header(
     scene_no_hint: str = "",
     context_lines: list[str] | None = None,
     agent=None,
+    understanding_plan=None,
 ) -> NormalizedSceneHeader | None:
     """Normalize one scene using only its header and same-scene context."""
 
@@ -331,7 +332,6 @@ async def normalize_screenplay_scene_header(
         if str(line or "").strip()
     )
 
-    runner = agent or _create_screenplay_normalizer_agent()
     language = detect_asset_language(
         "\n".join([header, str(location_hint or ""), context])
     )
@@ -354,8 +354,16 @@ async def normalize_screenplay_scene_header(
 {context or "（无）"}
 </scene_context>
 """
-    result = await runner.run(prompt)
-    output = result.output
+    if understanding_plan is not None and agent is None:
+        from novelvideo.model_understanding import structured_response
+
+        output = await structured_response(
+            understanding_plan, prompt, NormalizedSceneHeader,
+            instructions=SCREENPLAY_NORMALIZER_SYSTEM_PROMPT,
+        )
+    else:
+        runner = agent or _create_screenplay_normalizer_agent()
+        output = (await runner.run(prompt)).output
     values = output.model_dump()
     values["episode_number"] = int(output.episode_number or episode_number_hint or 0)
     values["scene_no"] = str(output.scene_no or scene_no_hint or "").strip()

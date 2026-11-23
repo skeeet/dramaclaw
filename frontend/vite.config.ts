@@ -160,7 +160,7 @@ export default defineConfig(({ mode }) => {
           target: apiTarget,
           changeOrigin: true,
         },
-        "^/api/v1/(model-gateway/agent(?:/|$)|chat/ws(?:[?]|$)|projects/[^/]+/chat/director-auto/(start|resume)(?:[?]|$))": {
+        "^/api/v1/(model-gateway/agent(?:/|$)|chat/ws(?:[?]|$)|projects/[^/]+/(chat/director-auto/(start|resume)|styles/analyze|freezone/image/reverse-prompt|episodes/[^/]+/scenes/plan)(?:[?]|$))": {
           target: apiTarget,
           ws: true,
           // Preserve the browser origin and the actual peer for local plan access checks.

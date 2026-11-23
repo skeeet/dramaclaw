@@ -2132,12 +2132,14 @@ async def _run_freezone_image_reverse_prompt_async(
     from novelvideo.freezone.image_node import reverse_prompt_from_image
     from novelvideo.freezone.jobs import ensure_freezone_dirs
     from novelvideo.freezone.paths import outputs_dir
+    from novelvideo.model_understanding import PlanModel
 
     payload = envelope.get("payload") or {}
     job_id = str(payload["job_id"])
     project_dir = Path(str(payload.get("project_dir") or ctx.output_dir))
     ensure_freezone_dirs(project_dir)
     source_path = Path(str(payload["source_path"]))
+    understanding_plan = PlanModel.from_task(payload.get("understanding_plan"))
     _update(ctx, "freezone_image_reverse_prompt", job_id, 0.1, "开始反推图片提示词...")
     prompt = await _call_freezone_leaf(
         envelope,
@@ -2145,6 +2147,7 @@ async def _run_freezone_image_reverse_prompt_async(
         "reverse_prompt_from_image",
         image_path=source_path,
         instruction=str(payload.get("instruction") or ""),
+        **({"understanding_plan": understanding_plan} if understanding_plan else {}),
     )
     out = outputs_dir(project_dir, "freezone_image_reverse_prompt") / f"{job_id}.json"
     out.parent.mkdir(parents=True, exist_ok=True)

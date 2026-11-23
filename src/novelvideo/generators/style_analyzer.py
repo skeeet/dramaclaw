@@ -3,12 +3,16 @@
 import asyncio
 import io
 import os
+from typing import TYPE_CHECKING
 
 from PIL import Image
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ImageUrl
 
 from novelvideo.brainclaw_contract import BrainClawProfile
+
+if TYPE_CHECKING:
+    from novelvideo.model_understanding import PlanModel
 
 
 class StyleAnalysisResult(BaseModel):
@@ -108,6 +112,18 @@ Return ONLY valid JSON with no markdown formatting:
             ]
         )
         return response.output.model_dump()
+
+    @classmethod
+    async def analyze_with_chatgpt_plan(cls, image_bytes: bytes, plan: "PlanModel") -> dict:
+        from novelvideo.model_understanding import structured_response
+
+        compressed = await asyncio.to_thread(cls._compress_image, image_bytes)
+        result = await structured_response(
+            plan, cls.ANALYSIS_PROMPT, StyleAnalysisResult,
+            instructions="Analyze reference images and return reusable visual style settings.",
+            images=[compressed],
+        )
+        return result.model_dump()
 
     @staticmethod
     def _compress_image(

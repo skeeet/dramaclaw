@@ -308,6 +308,21 @@ def save_agent_llm_config(
     _write_many(values)
 
 
+def get_understanding_plan_config(settings: dict[str, str] | None = None) -> dict:
+    if settings is None:
+        settings = get_model_gateway_settings() if _uses_ce_gateway_settings() else {}
+    try:
+        return json.loads(settings["understanding_chatgpt_plan"])
+    except (KeyError, ValueError):
+        return {"features": [], "model": "", "reasoningEffort": ""}
+
+
+def save_understanding_plan_config(*, features: list[str], model: str, effort: str) -> None:
+    _write_many({"understanding_chatgpt_plan": json.dumps({
+        "features": features, "model": model, "reasoningEffort": effort,
+    })})
+
+
 def save_official_newapi_key(
     *,
     api_key: str,
@@ -1541,6 +1556,7 @@ def build_model_gateway_status(
             "model": effective_llm.model,
             "brainclaw": effective_llm.is_brainclaw,
         },
+        "understanding": get_understanding_plan_config(settings),
         "agent": {
             "mode": agent_llm_mode,
             "chatgptPlanAvailable": chatgpt_plan_available(),

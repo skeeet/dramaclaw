@@ -194,7 +194,10 @@ def _refresh_time(value: Any) -> float:
 
 
 def _clear_tokens(profile: dict, status: str) -> None:
-    for key in ("id_token", "access_token", "refresh_token", "expires_at", "refresh_at", "refresh_needed"):
+    for key in (
+        "id_token", "access_token", "refresh_token", "expires_at",
+        "refresh_at", "refresh_needed", "understanding_connection_id",
+    ):
         profile.pop(key, None)
     profile["status"] = status
 
@@ -464,8 +467,27 @@ class PlanSession:
             raise _permission_required()
         return profile["access_token"]
 
-    def access_token(self) -> str:
+    def understanding_connection(self) -> str:
+        """Bind queued feature work to this sign-in across token refreshes."""
         with self.locked_state() as state:
+            profile = self._active_profile(state)
+            if not profile.get("access_token"):
+                raise _sign_in_required()
+            if SHARING_SCOPE not in profile.get("scopes", []):
+                raise _permission_required()
+            connection_id = profile.get("understanding_connection_id")
+            if not connection_id:
+                connection_id = uuid.uuid4().hex
+                profile["understanding_connection_id"] = connection_id
+                self.save(state)
+            return connection_id
+
+    def access_token(self, *, understanding_connection_id: str | None = None) -> str:
+        with self.locked_state() as state:
+            if understanding_connection_id is not None and (
+                self._active_profile(state).get("understanding_connection_id") != understanding_connection_id
+            ):
+                raise PlanError("connection_changed", "The ChatGPT connection changed. Start the analysis again.")
             return self._access_token(state)
 
     def record_auth_failure(self, token: str) -> None:
@@ -499,12 +521,15 @@ class PlanSession:
                 catalog.append({
                     "id": model["slug"], "label": model.get("display_name") or model["slug"],
                     "reasoningEfforts": efforts, "defaultReasoningEffort": default_effort,
+                    "supportsImages": "image" in (model.get("input_modalities") or []),
                 })
             return catalog
         except (ValueError, TypeError, KeyError, AttributeError):
             raise PlanError("invalid_models", "OpenAI did not return a valid ChatGPT plan model catalog.") from None
 
-    def inference_error(self, token: str, raw: str, *, status: int | None = None) -> PlanError:
+    def inference_error(
+        self, token: str, raw: str, *, status: int | None = None, operation: str = "Director",
+    ) -> PlanError:
         detail = raw.casefold()
         # Codex 0.164 forwards the message alone for unknown response.failed codes.
         if "subscription_sharing_usage_limit_exceeded" in detail or (
@@ -517,7 +542,7 @@ class PlanSession:
             self.record_auth_failure(token)
             return PlanError("session_rejected", "OpenAI rejected this ChatGPT session. Retry to renew it, or sign in again in Agent model settings.")
         if "subscription_sharing_unsupported_capability" in raw:
-            return PlanError("unsupported_capability", "ChatGPT plan usage rejected a capability requested by Director. Check the selected model and runtime.")
+            return PlanError("unsupported_capability", f"ChatGPT plan rejected a capability requested by {operation}. Check the selected model and inputs.")
         if status == 403 or "403 Forbidden" in raw:
             return PlanError("permission_denied", "OpenAI denied ChatGPT plan access. Check account, workspace, and region access.")
         if status == 429 or "429 Too Many Requests" in raw:
@@ -526,7 +551,10 @@ class PlanSession:
             return PlanError("usage_unavailable", "ChatGPT plan usage is temporarily unavailable. Retry later.")
         if "model_not_found" in raw:
             return PlanError("model_unavailable", "The selected ChatGPT plan model is unavailable. Choose another model in Agent model settings.")
-        return PlanError("director_request_failed", "Director could not complete the ChatGPT plan request. Check your model and connection, then retry.")
+        return PlanError(
+            f"{operation.lower()}_request_failed",
+            f"{operation} could not complete the ChatGPT plan request. Check your model and connection, then retry.",
+        )
 
     def disconnect(self, stop_runtime) -> None:
         with self._browser_lock:

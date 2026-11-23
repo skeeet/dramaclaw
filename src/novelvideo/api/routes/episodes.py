@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from starlette.concurrency import run_in_threadpool
 
 from novelvideo.api.auth import get_api_user
@@ -22,6 +22,8 @@ from novelvideo.api.deps import (
     sqlite_store_scope,
 )
 from novelvideo.api.schemas import EpisodePlanRequest, EpisodeUpdate, InsertManualShotRequest
+from novelvideo.chat.chatgpt_plan import PlanError
+from novelvideo.model_understanding import PlanModel
 from novelvideo.novel_source import (
     has_imported_novel,
     novel_import_required_response,
@@ -119,6 +121,7 @@ async def _plan_episode_assets(
     episode_num: int,
     asset_kind: str,
     user: dict,
+    understanding_plan: PlanModel | None = None,
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
     await get_usage_meter().set_project_llm_usage_context(
@@ -153,6 +156,8 @@ async def _plan_episode_assets(
         else {}
     )
     compiler.spine_template = str(project_config.get("spine_template") or "drama")
+    if understanding_plan is not None:
+        compiler.scene_heading_plan = understanding_plan
     try:
         if asset_kind == "scene":
             scene_menu, new_count = await compiler.compile_episode_scenes(episode, on_log=log_fn)
@@ -190,7 +195,7 @@ async def _plan_episode_assets(
                     "logs": logs,
                 },
             }
-    except ValueError as e:
+    except (ValueError, PlanError) as e:
         return {"ok": False, "error": str(e)}
 
     return {"ok": False, "error": f"Unknown asset planning kind: {asset_kind}"}
@@ -201,6 +206,7 @@ async def _enqueue_episode_asset_planner(
     episode_num: int,
     asset_kind: str,
     user: dict,
+    understanding_plan: PlanModel | None = None,
 ) -> dict:
     task_info = _EPISODE_ASSET_PLANNER_TASKS.get(asset_kind)
     if task_info is None:
@@ -213,6 +219,7 @@ async def _enqueue_episode_asset_planner(
             episode_num=episode_num,
             asset_kind=asset_kind,
             user=user,
+            understanding_plan=understanding_plan,
         )
     if asset_kind == "scene":
         build_task = await run_in_threadpool(
@@ -231,7 +238,10 @@ async def _enqueue_episode_asset_planner(
         queue_kind="default",
         episode=episode_num,
         scope=task_scope,
-        payload={"episode": episode_num, "asset_kind": asset_kind},
+        payload={
+            "episode": episode_num, "asset_kind": asset_kind,
+            **({"understanding_plan": understanding_plan.task_payload()} if understanding_plan else {}),
+        },
     )
     return {
         "ok": True,
@@ -681,14 +691,19 @@ async def plan_episode_identities_async(
 
 
 @router.post("/projects/{project}/episodes/{episode_num}/scenes/plan")
-async def plan_episode_scenes(project: str, episode_num: int, user: dict = Depends(get_api_user)):
+async def plan_episode_scenes(
+    project: str, episode_num: int, user: dict = Depends(get_api_user), request: Request = None
+):
     """规划单集场景菜单。"""
     logger.info("[%s] EP%d plan_episode_scenes", project, episode_num)
+    from novelvideo.model_understanding import SCENE_HEADINGS, plan_for_request
+
     return await _enqueue_episode_asset_planner(
         project=project,
         episode_num=episode_num,
         asset_kind="scene",
         user=user,
+        understanding_plan=await plan_for_request(SCENE_HEADINGS, request),
     )
 
 

@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
 logger = logging.getLogger("novelvideo.api.styles")
@@ -316,11 +316,13 @@ async def analyze_style(
     file: UploadFile = File(...),
     style_id: str = Form(""),
     user: dict = Depends(get_api_user),
+    request: Request = None,
 ):
     """上传参考图片，AI 分析并提取风格参数。"""
     resolved = await resolve_project_scope(project, user, required_role="editor")
     from novelvideo.services.style_service import StyleService
     from novelvideo.generators.style_analyzer import StyleAnalyzer
+    from novelvideo.model_understanding import STYLE_ANALYSIS, plan_for_request
     from novelvideo.ports import get_usage_meter
 
     content = await file.read()
@@ -328,6 +330,7 @@ async def analyze_style(
         return {"ok": False, "error": "No file uploaded"}
 
     mime_type = file.content_type or "image/jpeg"
+    understanding_plan = await plan_for_request(STYLE_ANALYSIS, request)
 
     preview_token = None
     if style_id.strip():
@@ -337,6 +340,18 @@ async def analyze_style(
             content,
             extension,
         )
+
+    if understanding_plan is not None:
+        from novelvideo.chat.chatgpt_plan import PlanError
+
+        try:
+            data = await StyleAnalyzer.analyze_with_chatgpt_plan(content, understanding_plan)
+        except (PlanError, OSError) as exc:
+            message = str(exc) if isinstance(exc, PlanError) else "Invalid reference image."
+            return {"ok": False, "error": message}
+        if preview_token:
+            data["preview_token"] = preview_token
+        return {"ok": True, "data": data}
 
     usage_meter = get_usage_meter()
     ctx = getattr(resolved, "ctx", None)

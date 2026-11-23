@@ -23,6 +23,7 @@ interface PlanModel {
   label: string;
   reasoningEfforts: string[];
   defaultReasoningEffort: string;
+  supportsImages?: boolean;
 }
 
 const path = "api/v1/model-gateway/agent/chatgpt-plan";
@@ -79,13 +80,14 @@ export function useChatGPTPlan(enabled: boolean) {
 }
 
 export function ChatGPTPlanPanel({
-  plan, model, setModel, effort, setEffort,
+  plan, model, setModel, effort, setEffort, requireImages = false,
 }: {
   plan: ReturnType<typeof useChatGPTPlan>;
   model: string;
   setModel: (model: string) => void;
   effort: string;
   setEffort: (effort: string) => void;
+  requireImages?: boolean;
 }) {
   const { t } = useTranslation();
   const accountId = useId();
@@ -99,7 +101,8 @@ export function ChatGPTPlanPanel({
   const needsConsent = status?.status === "connected" && !status.sharing;
   const reconsent = needsConsent && choice === status?.activeProfileId;
   const message = plan.connection.error?.message || status?.message || plan.models.error?.message;
-  const selected = plan.models.data?.find((entry) => entry.id === model);
+  const models = plan.models.data?.filter((entry) => !requireImages || entry.supportsImages);
+  const selected = models?.find((entry) => entry.id === model);
   const statusText = connecting
     ? t("settings.modelConfig.agent.chatgpt.connecting")
     : plan.connected
@@ -169,9 +172,9 @@ export function ChatGPTPlanPanel({
           <Label htmlFor={modelId}>{t("settings.modelConfig.agent.model")}</Label>
           <select id={modelId} className={selectClass} value={model}
             onChange={(event) => setModel(event.target.value)}
-            disabled={!plan.models.data?.length || plan.connection.isPending}>
+            disabled={!models?.length || plan.connection.isPending}>
             <option value="" disabled>{t("settings.modelConfig.agent.chatgpt.chooseModel")}</option>
-            {plan.models.data?.map((option) => (
+            {models?.map((option) => (
               <option value={option.id} key={option.id}>{option.label}</option>
             ))}
           </select>

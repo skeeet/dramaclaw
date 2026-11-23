@@ -207,6 +207,12 @@ class ChatGPTPlanSignInBody(BaseModel):
     reconsent: bool = False
 
 
+class UnderstandingPlanBody(BaseModel):
+    features: list[str]
+    model: str = ""
+    reasoning_effort: str = Field(default="", alias="reasoningEffort")
+
+
 class MediaRelayConfigBody(BaseModel):
     provider: str = "aliyun_oss"
     ttl_seconds: int = Field(default=1800, alias="ttlSeconds")
@@ -762,11 +768,12 @@ async def save_agent_gateway_config(body: AgentLlmConfigBody, request: Request) 
     }
 
 
-def _require_local_chatgpt_plan(request: Request) -> None:
+def _require_local_chatgpt_plan(request: Request, *, require_runtime: bool = True) -> None:
     from novelvideo.chat.chatgpt_plan import available, is_local_connection
 
     if (
-        not available()
+        not is_ce_effective()
+        or (require_runtime and not available())
         or not is_local_connection(request)
         or request.headers.get("x-dramaclaw-local") != "1"
     ):
@@ -815,13 +822,52 @@ def chatgpt_plan_models(request: Request) -> dict[str, Any]:
 def chatgpt_plan_sign_out(request: Request) -> dict[str, Any]:
     from novelvideo.chat.chatgpt_plan import SESSION, PlanError
     from novelvideo.chat.codex_app_server import stop_chatgpt_plan_runtime
+    from novelvideo.model_understanding import stop_understanding_responses
 
     _require_local_chatgpt_plan(request)
+
+    def stop_plan_requests() -> None:
+        stop_chatgpt_plan_runtime()
+        stop_understanding_responses()
+
     try:
-        SESSION.disconnect(stop_chatgpt_plan_runtime)
+        SESSION.disconnect(stop_plan_requests)
         return {"ok": True, "data": SESSION.status()}
     except PlanError as exc:
         raise _chatgpt_plan_error(exc) from None
+
+
+@router.post("/agent/chatgpt-plan/understanding")
+async def save_understanding_plan(body: UnderstandingPlanBody, request: Request) -> dict[str, Any]:
+    from novelvideo.chat.chatgpt_plan import SESSION, PlanError
+    from novelvideo.model_gateway_settings import (
+        get_understanding_plan_config,
+        save_understanding_plan_config,
+    )
+    from novelvideo.model_understanding import FEATURES, IMAGE_FEATURES
+
+    features = set(body.features)
+    _require_local_chatgpt_plan(request, require_runtime=bool(features))
+    if features - FEATURES:
+        raise HTTPException(400, "Unknown understanding feature.")
+    model = body.model.strip()
+    effort = body.reasoning_effort.strip()
+    if features:
+        try:
+            models = await asyncio.to_thread(SESSION.models)
+        except PlanError as exc:
+            raise _chatgpt_plan_error(exc) from None
+        choice = next((item for item in models if item["id"] == model), None)
+        if choice is None or (features & IMAGE_FEATURES and not choice["supportsImages"]):
+            raise HTTPException(400, "Choose a ChatGPT plan model that supports the selected inputs.")
+        if effort and effort not in choice["reasoningEfforts"]:
+            raise HTTPException(400, "Choose a reasoning effort supported by the selected model.")
+        effort = effort or choice["defaultReasoningEffort"]
+    else:
+        previous = get_understanding_plan_config()
+        model, effort = previous["model"], previous["reasoningEffort"]
+    save_understanding_plan_config(features=sorted(features), model=model, effort=effort)
+    return {"ok": True, "data": get_understanding_plan_config()}
 
 
 @router.post("/custom/brainclaw/config")

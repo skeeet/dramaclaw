@@ -143,11 +143,18 @@ export interface ModelGatewayConfig {
   effective: EffectiveGatewayConfig;
   llmEffective: EffectiveLlmConfig;
   agent?: AgentLlmConfig;
+  understanding?: UnderstandingPlanConfig;
   official: OfficialGatewayConfig;
   brainclaw?: GatewayEndpointPreview;
   custom: CustomGatewayConfig;
   provisioner?: ModelGatewayProvisionerConfig;
   mediaRelay?: MediaRelayConfig;
+}
+
+export interface UnderstandingPlanConfig {
+  features: string[];
+  model: string;
+  reasoningEffort: string;
 }
 
 export interface OfficialMediaCatalogStatus {
