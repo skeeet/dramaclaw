@@ -8348,6 +8348,30 @@
         "thirdParty": "第三方",
         "model": "模型名称",
         "thirdPartyHint": "第三方服务需兼容 OpenAI Responses API 和工具调用；切换地址时需要重新输入 API Key。",
+        "chatgpt": {
+          "title": "ChatGPT 套餐",
+          "checking": "正在检查 ChatGPT 连接…",
+          "connecting": "请在浏览器中完成登录并授权。",
+          "connected": "已连接 {{account}}",
+          "disconnected": "尚未连接 ChatGPT。",
+          "reauthorize": "ChatGPT 会话已过期或被撤销，请重新登录。",
+          "needsConsent": "请授权 DramaClaw 使用你的 ChatGPT 套餐。",
+          "unavailable": "使用 ChatGPT 套餐需要本地 DramaClaw 和 Codex。",
+          "account": "ChatGPT 账号",
+          "addAccount": "添加其他 ChatGPT 账号",
+          "signIn": "通过 ChatGPT 继续",
+          "enable": "启用 ChatGPT 套餐用量",
+          "signOut": "退出登录",
+          "usage": "管理 ChatGPT 用量和点数",
+          "chooseModel": "选择模型",
+          "retryModels": "重新加载模型",
+          "reasoningEffort": "推理强度",
+          "modelDefault": "模型默认",
+          "effort": {
+            "none": "无", "minimal": "最低", "low": "低", "medium": "中",
+            "high": "高", "xhigh": "极高", "max": "最高"
+          }
+        },
         "save": "保存 Agent 配置",
         "saved": "Agent 模型配置已保存，新会话将使用最新配置。"
       },

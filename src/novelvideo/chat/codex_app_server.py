@@ -708,12 +708,82 @@ class _SharedCodexRuntime:
 
 
 _RUNTIME = _SharedCodexRuntime()
+_PLAN_CLIENTS: set = set()
+_PLAN_CLIENTS_LOCK = threading.Lock()
 
 
 def stop_shared_codex_runtime() -> None:
     """Drop the node runtime when turn-secret cleanup cannot be proven."""
 
     _RUNTIME.stop()
+
+
+def stop_chatgpt_plan_runtime() -> None:
+    """Called under the credential lock on sign-out or account change."""
+    with _PLAN_CLIENTS_LOCK:
+        for client in _PLAN_CLIENTS:
+            client.close()
+
+
+@contextmanager
+def chatgpt_plan_codex(config) -> Iterator[tuple[object, str]]:
+    """Start a stdio process for one Director turn with fresh OAuth credentials."""
+    from dataclasses import replace
+    from importlib.metadata import version
+
+    from openai_codex import Codex
+    from openai_codex._initialize_metadata import validate_initialize_metadata
+    from openai_codex.client import CodexClient
+
+    from novelvideo.chat.chatgpt_plan import APP_NAME, SESSION, PlanError
+
+    class PlanClient(CodexClient):
+        def start(self) -> None:
+            args = [str(_resolve_codex_bin(self.config))]
+            for value in self.config.config_overrides:
+                args.extend(("--config", value))
+            args.extend(("app-server", "--listen", "stdio://"))
+            # The SDK's stock launcher merges the parent's environment. Only
+            # the allowlisted OS environment and this turn's bearer are needed.
+            self._proc = subprocess.Popen(
+                args, cwd=self.config.cwd, env=self.config.env,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8", bufsize=1,
+            )
+            self._start_reader_thread()
+
+    process_env = _node_process_env(dict(config.env or {}))
+    for key in ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "SSL_CERT_DIR", "SSL_CERT_FILE",
+                "DRAMACLAW_CODEX_GATEWAY_BASE_URL"):
+        process_env.pop(key, None)
+    process_env["RUST_LOG"] = "off"
+    process_env["CODEX_DISABLE_REMOTE_CONTROL"] = "1"
+    client = None
+    try:
+        with SESSION.locked_state() as state:
+            access_token = SESSION._access_token(state)
+            process_env["ACCESS_TOKEN"] = access_token
+            child_config = replace(
+                config, env=process_env, cwd=process_env["CODEX_HOME"],
+                client_name=APP_NAME, client_title=APP_NAME, client_version=version("supertale-ce"),
+            )
+            client = PlanClient(config=child_config, approval_handler=_refuse_server_request)
+            with _PLAN_CLIENTS_LOCK:
+                client.start()
+                _PLAN_CLIENTS.add(client)
+            process_env.pop("ACCESS_TOKEN", None)
+        codex = object.__new__(Codex)
+        codex._client = client
+        try:
+            codex._init = validate_initialize_metadata(client.initialize())
+        except Exception:
+            raise PlanError("runtime_unavailable", "Director could not initialize the ChatGPT plan Codex runtime.") from None
+        yield codex, access_token
+    finally:
+        if client is not None:
+            with _PLAN_CLIENTS_LOCK:
+                client.close()
+                _PLAN_CLIENTS.discard(client)
 
 
 def _resolve_codex_home(codex_home: Path | None) -> Path:

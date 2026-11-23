@@ -9,7 +9,7 @@ import type { ErrorResponse, OkResponse } from "@/types/api";
 
 export type GatewayMode = "official" | "custom" | "hybrid";
 export type CustomLlmMode = "relayclaw_brainclaw" | "advanced";
-export type AgentLlmMode = "inherit" | "third_party";
+export type AgentLlmMode = "inherit" | "third_party" | "chatgpt_plan";
 
 /** 通用的「端点预览」：服务端只回 key 预览，绝不回完整 key。 */
 export interface GatewayEndpointPreview {
@@ -49,6 +49,9 @@ export interface EffectiveLlmConfig extends EffectiveGatewayConfig {
 export interface AgentLlmConfig extends GatewayEndpointPreview {
   mode: AgentLlmMode;
   model: string;
+  chatgptPlanAvailable?: boolean;
+  chatgptPlanModel?: string;
+  chatgptPlanEffort?: string;
 }
 
 export interface NewApiDatabaseStatus {
@@ -176,6 +179,7 @@ export interface SaveAgentLlmConfigInput {
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  reasoningEffort?: string;
 }
 
 export interface NewApiDatabaseConfigInput {
@@ -474,6 +478,7 @@ export function useSaveAgentLlmConfig() {
       api
         .post("api/v1/model-gateway/agent/config", {
           json: input,
+          headers: input.mode === "chatgpt_plan" ? { "X-DramaClaw-Local": "1" } : undefined,
           throwHttpErrors: false,
         })
         .json<OkResponse<ModelGatewayConfig> | ErrorResponse>(),

@@ -8348,6 +8348,30 @@
         "thirdParty": "Third party",
         "model": "Model name",
         "thirdPartyHint": "The service must support the OpenAI Responses API and tool calls. Re-enter the API key when changing the endpoint.",
+        "chatgpt": {
+          "title": "ChatGPT plan",
+          "checking": "Checking ChatGPT connection…",
+          "connecting": "Complete sign-in and consent in your browser.",
+          "connected": "Connected to {{account}}",
+          "disconnected": "ChatGPT is disconnected.",
+          "reauthorize": "Your ChatGPT session has expired or was revoked. Sign in again.",
+          "needsConsent": "Allow DramaClaw to use your ChatGPT plan.",
+          "unavailable": "ChatGPT plan requires a local DramaClaw session with Codex.",
+          "account": "ChatGPT account",
+          "addAccount": "Add another ChatGPT account",
+          "signIn": "Continue with ChatGPT",
+          "enable": "Enable ChatGPT plan usage",
+          "signOut": "Sign out",
+          "usage": "Manage ChatGPT usage and credits",
+          "chooseModel": "Choose a model",
+          "retryModels": "Reload models",
+          "reasoningEffort": "Reasoning effort",
+          "modelDefault": "Model default",
+          "effort": {
+            "none": "None", "minimal": "Minimal", "low": "Low", "medium": "Medium",
+            "high": "High", "xhigh": "Extra high", "max": "Maximum"
+          }
+        },
         "save": "Save Agent settings",
         "saved": "Agent model settings saved. New sessions use the latest configuration."
       },

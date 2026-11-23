@@ -42,8 +42,10 @@ from novelvideo.chat.backend_sdk import (
     clear_codex_thread_history,
     control_codex_runtime,
     follow_codex_turn,
+    follow_live_plan_turn,
     interrupt_live_claude_client,
     interrupt_live_codex_turn,
+    live_plan_thread,
     read_codex_thread_history,
 )
 from novelvideo.chat.codex_app_server import (
@@ -2534,6 +2536,9 @@ def _release_chat_run_lock(username: str, project: str, lock: ChatStartLock) -> 
 
 
 def _codex_thread_snapshot(thread_id: str, *, include_turns: bool = False) -> Any | None:
+    local = live_plan_thread(thread_id, include_turns=include_turns)
+    if local is not None:
+        return local
     try:
         with attach_shared_codex(_codex_node_home()) as codex:
             return codex._client.thread_read(thread_id, include_turns=include_turns).thread
@@ -3631,6 +3636,7 @@ def _build_codex_env(
     turn_id: str | None = None,
     project_state_dir: str | Path | None = None,
     agent_token_file: str | Path | None = None,
+    chatgpt_plan: bool = False,
 ) -> dict[str, str]:
     from novelvideo import config
 
@@ -3708,11 +3714,12 @@ def _build_codex_env(
     # Validate the request egress boundary before looking up a usable model
     # credential. An organization denial must remain fail-closed even when the
     # local platform key is absent or still being configured.
-    _api_key, base_url = _codex_turn_gateway_credentials(authorization)
+    base_url = "" if chatgpt_plan else _codex_turn_gateway_credentials(authorization)[1]
     # The App Server is shared across projects and organizations. No usable
     # model credential may survive into its process environment; authentication
     # is supplied in the thread configuration for one turn only.
     for name in (
+        "ACCESS_TOKEN",
         "ANTHROPIC_API_KEY",
         "DRAMACLAW_CODEX_GATEWAY_API_KEY",
         "FAL_KEY",
@@ -3726,7 +3733,10 @@ def _build_codex_env(
         "VOLCENGINE_API_KEY",
     ):
         child_env.pop(name, None)
-    child_env[_CODEX_GATEWAY_BASE_URL_ENV] = base_url
+    if chatgpt_plan:
+        child_env.pop(_CODEX_GATEWAY_BASE_URL_ENV, None)
+    else:
+        child_env[_CODEX_GATEWAY_BASE_URL_ENV] = base_url
     return child_env
 
 
@@ -3921,17 +3931,8 @@ def _codex_gateway_provider_overrides(
     )
 
 
-def _codex_gateway_config_overrides(
-    base_url: str,
-    *,
-    native_tool_search: bool = False,
-) -> tuple[str, ...]:
-    """Node-safe Codex config containing no usable Gateway credential."""
-    overrides = [
-        *_codex_gateway_provider_overrides(
-            base_url,
-        ),
-        f'model_reasoning_effort="{_codex_reasoning_effort()}"',
+def _codex_common_config_overrides() -> tuple[str, ...]:
+    return (
         'web_search="disabled"',
         "features.apps=false",
         "features.hooks=false",
@@ -3948,6 +3949,62 @@ def _codex_gateway_config_overrides(
         "features.view_image=false",
         "memories.generate_memories=false",
         "memories.use_memories=false",
+    )
+
+
+def _codex_chatgpt_plan_overrides(model: str, effort: str) -> tuple[str, ...]:
+    from novelvideo.chat.chatgpt_plan import PROVIDER, REASONING_EFFORTS, RESOURCE
+    from novelvideo.utils.state_index_files import write_json_atomic
+
+    # The plan preview accepts concrete MCP functions and rejects tool_search.
+    # Use the same concrete-tool capabilities as the working Gateway catalog.
+    source = Path(__file__).resolve().parents[1] / "assets/codex/dramaclaw-model-catalog.json"
+    if not source.is_file():
+        source = Path(__file__).resolve().parents[3] / "deploy/codex/dramaclaw-model-catalog.json"
+    template = json.loads(source.read_text(encoding="utf-8"))["models"][0]
+    catalog = _runtime_root() / "codex" / "chatgpt-plan-models.json"
+    catalog = catalog.resolve().with_name(
+        f"chatgpt-plan-{hashlib.sha256(model.encode()).hexdigest()[:16]}.json"
+    )
+    write_json_atomic(catalog, {"models": [{
+        **template,
+        "slug": model,
+        "display_name": model,
+        "supported_reasoning_levels": [
+            {"effort": level, "description": ""} for level in REASONING_EFFORTS
+        ],
+    }]})
+    prefix = f"model_providers.{PROVIDER}"
+    return (
+        *_codex_common_config_overrides(),
+        f"model_reasoning_effort={json.dumps(effort)}",
+        f"model_provider={json.dumps(PROVIDER)}",
+        f'{prefix}.name="ChatGPT plan"',
+        f"{prefix}.base_url={json.dumps(RESOURCE)}",
+        f'{prefix}.env_key="ACCESS_TOKEN"',
+        f'{prefix}.wire_api="responses"',
+        f"{prefix}.requires_openai_auth=false",
+        f"{prefix}.supports_websockets=false",
+        f"{prefix}.request_max_retries=0",
+        f"{prefix}.stream_max_retries=0",
+        'cli_auth_credentials_store="ephemeral"',
+        "analytics.enabled=false",
+        "features.code_mode=false",
+        "features.code_mode_only=false",
+        f"model_catalog_json={json.dumps(str(catalog))}",
+    )
+
+
+def _codex_gateway_config_overrides(
+    base_url: str,
+    *,
+    native_tool_search: bool = False,
+) -> tuple[str, ...]:
+    """Node-safe Codex config containing no usable Gateway credential."""
+    overrides = [
+        *_codex_gateway_provider_overrides(base_url),
+        *_codex_common_config_overrides(),
+        f'model_reasoning_effort="{_codex_reasoning_effort()}"',
     ]
     # Most turns use concrete MCP namespaces. Exact existing-node actions use
     # the separately pinned native-search catalog because the deployed model
@@ -4116,6 +4173,19 @@ def _build_codex_thread(
     execution_context: str = "",
     client_user_message_id: str | None = None,
 ) -> AgentRuntimeThreadPort:
+    from novelvideo.chat.chatgpt_plan import PROVIDER, REASONING_EFFORTS, PlanError, available
+    from novelvideo.model_gateway_settings import get_director_chatgpt_plan_config
+
+    plan_config = get_director_chatgpt_plan_config()
+    use_chatgpt_plan = plan_config is not None
+    if use_chatgpt_plan and (not available() or egress_context is not None or authorization is not None):
+        raise PlanError("unavailable", "ChatGPT plan requires local DramaClaw with Codex.")
+    if plan_config is not None:
+        plan_model, plan_effort = plan_config
+        if not plan_model:
+            raise PlanError("model_required", "Choose a ChatGPT plan model in Director settings.")
+        if plan_effort and plan_effort not in REASONING_EFFORTS:
+            raise PlanError("effort_unsupported", "Choose a supported ChatGPT plan reasoning effort in Director settings.")
     workspace, _codex_home = ensure_user_codex_workspace(
         username,
         project,
@@ -4135,6 +4205,7 @@ def _build_codex_thread(
         turn_id=turn_id,
         project_state_dir=project_state_dir,
         agent_token_file=agent_token_file,
+        **({"chatgpt_plan": True} if use_chatgpt_plan else {}),
     )
     if (
         tool_mode == "freezone_canvas"
@@ -4148,28 +4219,36 @@ def _build_codex_thread(
             request_prompt=request_prompt,
             bridge_dir=env["DRAMACLAW_CANVAS_COMMAND_BRIDGE_DIR"],
         )
-    gateway_api_key, gateway_base_url = _codex_turn_gateway_credentials(authorization)
     exact_node_action = not exact_audio_action_plan and str(
         tool_mode or ""
     ).strip() == "freezone_canvas" and _freezone_exact_node_action_requested(
         request_prompt
     )
-    if exact_node_action:
-        node_config_overrides = _codex_gateway_config_overrides(
-            gateway_base_url,
-            native_tool_search=True,
-        )
+    if plan_config is not None:
+        model = plan_model
+        provider = PROVIDER
+        plan_effort = plan_effort or _DEFAULT_CODEX_REASONING_EFFORT
+        node_config_overrides = _codex_chatgpt_plan_overrides(model, plan_effort)
+        turn_metadata = {}
     else:
-        node_config_overrides = _codex_gateway_config_overrides(gateway_base_url)
+        gateway_api_key, gateway_base_url = _codex_turn_gateway_credentials(authorization)
+        model = _codex_model()
+        provider = _CODEX_MODEL_PROVIDER
+        node_config_overrides = (
+            _codex_gateway_config_overrides(gateway_base_url, native_tool_search=True)
+            if exact_node_action else _codex_gateway_config_overrides(gateway_base_url)
+        )
+        turn_metadata = {_CODEX_GATEWAY_KEY_METADATA: gateway_api_key}
+        if control_capability:
+            turn_metadata[_CODEX_CONTROL_CAPABILITY_METADATA] = control_capability
     mcp_servers = (
         {}
         if exact_audio_action_plan
         else _dramaclaw_mcp_servers(tool_mode, prompt=request_prompt)
     )
     thread_config_overrides = _codex_mcp_config_overrides(mcp_servers)
-    turn_metadata = {_CODEX_GATEWAY_KEY_METADATA: gateway_api_key}
-    if control_capability:
-        turn_metadata[_CODEX_CONTROL_CAPABILITY_METADATA] = control_capability
+    if plan_config is not None:
+        thread_config_overrides += (f"model_reasoning_effort={json.dumps(plan_effort)}",)
     context_kwargs = {}
     if not exact_audio_action_plan:
         context_kwargs = {
@@ -4191,8 +4270,8 @@ def _build_codex_thread(
         codex_bin=_codex_bin_path(),
         cwd=workspace,
         env=env,
-        model=_codex_model(),
-        model_provider=_CODEX_MODEL_PROVIDER,
+        model=model,
+        model_provider=provider,
         developer_instructions=(
             _CODEX_EXACT_AUDIO_ACTION_PLANNER_INSTRUCTIONS
             if exact_audio_action_plan
@@ -4205,7 +4284,9 @@ def _build_codex_thread(
             _CODEX_EXACT_AUDIO_ACTION_PLAN_SCHEMA if exact_audio_action_plan else None
         ),
         # Stop, authorization invalidation and finalization remove the token file first.
-        retry_allowed=(lambda: token_path.exists()) if token_path is not None else None,
+        retry_allowed=(
+            (lambda: token_path.exists()) if token_path is not None and not use_chatgpt_plan else None
+        ),
         **context_kwargs,
     )
     thread_id = _get_codex_thread_id(
@@ -4387,6 +4468,12 @@ async def stream_assistant_reply(
                 project_state_dir=project_state_dir,
             )
         backend = str(backend or "").strip() or _chat_backend()
+        if backend != "codex":
+            from novelvideo.chat.chatgpt_plan import PlanError
+            from novelvideo.model_gateway_settings import get_director_chatgpt_plan_config
+
+            if get_director_chatgpt_plan_config() is not None:
+                raise PlanError("unavailable", "ChatGPT plan requires local DramaClaw with Codex.")
         if backend == "codex":
             active = await _active_persisted_codex_turn(username, lock_project)
             if active is not None:
@@ -5608,16 +5695,17 @@ async def follow_active_codex_turn(
     live = LiveTurnProjector(turn_id=business_turn_id)
     live.bind(entry["turn_id"])
     disposition = "interrupted"
-    options = _codex_thread_runtime_options()
     try:
-        if options is None:
-            raise CodexAppServerNotRunning("Codex app-server is not running")
         # Explicitly close the iterator on cancellation so its worker releases the connection.
         from contextlib import aclosing
 
-        async with aclosing(follow_codex_turn(
-            **options, thread_id=entry["thread_id"], turn_id=entry["turn_id"],
-        )) as stream:
+        if entry.get("chatgpt_plan"):
+            events = follow_live_plan_turn(entry["thread_id"], entry["turn_id"])
+        elif (options := _codex_thread_runtime_options()) is not None:
+            events = follow_codex_turn(**options, thread_id=entry["thread_id"], turn_id=entry["turn_id"])
+        else:
+            raise CodexAppServerNotRunning("Codex app-server is not running")
+        async with aclosing(events) as stream:
             async for event in stream:
                 frame = _codex_event_frame(event, live)
                 if frame is not None:
@@ -5715,6 +5803,7 @@ async def _stream_assistant_reply_codex(
     detached = False
     agent_token: str | None = None
     token_file: Path | None = None
+    uses_chatgpt_plan = False
     logger.info(
         "codex turn start user=%s project=%s profile=%s tool_mode=%s canvas=%s turn=%s",
         username,
@@ -5819,6 +5908,7 @@ async def _stream_assistant_reply_codex(
             exact_audio_action_plan=exact_audio_action_target is not None,
             **context_kwargs,
         )
+        uses_chatgpt_plan = bool(getattr(thread, "uses_chatgpt_plan", False))
         turn_images = (
             await turn_image_files(image_paths, Path(project_dir))
             if image_paths and project_dir is not None and codex_image_input_enabled()
@@ -5910,6 +6000,7 @@ async def _stream_assistant_reply_codex(
                             ),
                             "agent_profile": agent_profile,
                             "structured_canvas_reply": structured_canvas_reply,
+                            **({"chatgpt_plan": True} if uses_chatgpt_plan else {}),
                         }
                         _set_active_codex_turn(username, codex_scope_key, entry)
                         active_turn_value = entry
@@ -6079,9 +6170,11 @@ async def _stream_assistant_reply_codex(
                     ).strip()
                     audio_notice = failure
     except asyncio.CancelledError:
-        detached = active_turn_value is not None
+        detached = active_turn_value is not None and not uses_chatgpt_plan
         if detached:
             turn_disposition = "detached"
+        elif uses_chatgpt_plan:
+            turn_disposition = "interrupted"
         raise
     finally:
         logger.info(

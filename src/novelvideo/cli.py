@@ -454,6 +454,8 @@ def api(
 
     api_host = host or os.environ.get("NOVELVIDEO_API_HOST", "0.0.0.0")
     api_port = port or int(os.environ.get("NOVELVIDEO_API_PORT", "8780"))
+    if api_host in {"127.0.0.1", "::1", "localhost"}:
+        os.environ.setdefault("DRAMACLAW_LOCAL_CHATGPT_PLAN", "1")
     console.print(f"[green]访问: http://{api_host}:{api_port}/api/v1[/green]")
     uvicorn.run(
         "novelvideo.api.app:app",

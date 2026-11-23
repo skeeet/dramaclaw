@@ -26,6 +26,7 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Request,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -152,8 +153,11 @@ def _user_facing_chat_error(exc: BaseException) -> str:
     """Turn provider/runtime failures into stable, safe chat copy."""
 
     from novelvideo.chat.codex_app_server import CodexRuntimeError
+    from novelvideo.chat.chatgpt_plan import PlanError
     from novelvideo.chat.hermes_fork_requirement import HermesForkMissing
 
+    if isinstance(exc, PlanError):
+        return str(exc)
     if isinstance(exc, (CodexRuntimeError, HermesForkMissing)):
         return "本地助手运行时不可用：请重启应用；若仍失败，请更新应用并导出诊断日志。"
 
@@ -517,8 +521,10 @@ async def get_director_auto_run(
 async def start_director_auto_run(
     project: str,
     payload: DirectorAutoStartIn,
+    request: Request,
     user: dict = Depends(get_api_user),
 ) -> dict[str, Any]:
+    _require_local_plan_inference(request)
     ctx = await resolve_project_context(
         user=user, project_id=project, required_role="editor"
     )
@@ -570,8 +576,10 @@ async def suspend_director_auto_run(
 @router.post("/projects/{project}/chat/director-auto/resume")
 async def resume_director_auto_run(
     project: str,
+    request: Request,
     user: dict = Depends(get_api_user),
 ) -> dict[str, Any]:
+    _require_local_plan_inference(request)
     ctx = await resolve_project_context(
         user=user, project_id=project, required_role="editor"
     )
@@ -583,6 +591,14 @@ async def resume_director_auto_run(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True, "data": _director_auto_payload(run)}
+
+
+def _require_local_plan_inference(connection: Request | WebSocket) -> None:
+    from novelvideo.chat.chatgpt_plan import is_local_connection
+    from novelvideo.model_gateway_settings import get_director_chatgpt_plan_config
+
+    if get_director_chatgpt_plan_config() is not None and not is_local_connection(connection):
+        raise HTTPException(status_code=403, detail="ChatGPT plan requests require a local DramaClaw connection.")
 
 
 @router.post("/chat/uploads")
@@ -4699,6 +4715,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 return
 
             try:
+                _require_local_plan_inference(websocket)
                 active_codex_turn = chat_service.active_codex_turn_for_scope(username, scope)
                 if active_codex_turn is not None:
                     raise chat_service.ChatTurnBusyError(

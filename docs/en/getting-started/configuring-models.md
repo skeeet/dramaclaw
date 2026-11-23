@@ -19,7 +19,18 @@ Enable the intended mode after configuring it. New jobs read the latest mode, ke
 
 ## Agent model
 
-The Xia Director Agent can either follow the active gateway mode or use an independent third-party endpoint. Under **Agent model**, select **Third party** and provide an OpenAI-compatible Base URL, API Key, and model name. The endpoint must support the OpenAI Responses API and tool calls. This setting affects the Agent only; image, video, audio, embedding, and other feature-model routes continue to use the selected gateway mode.
+Xia Director can follow the active gateway, use an independent third-party endpoint, or use an eligible ChatGPT plan. For **Third party**, enter an OpenAI-compatible base URL, API key, and model that supports the Responses API and tool calls. Script generation outside Director, embeddings, image, audio, video, and ComfyUI use their configured providers.
+
+### ChatGPT plan
+
+ChatGPT plan is available in local Community Edition with the DramaClaw Codex runtime. For a source checkout, start both services on loopback with `NOVELVIDEO_API_HOST=127.0.0.1 SUPERTALE_FE_HOST=127.0.0.1 bash scripts/start-ce.sh` and open the frontend at `http://127.0.0.1:5173`.
+
+1. Open **Settings → Models & Channels → Agent model → ChatGPT plan**.
+2. Select **Continue with ChatGPT**. Sign in and approve plan usage in your browser.
+3. Choose a model and reasoning effort, then select **Save Agent settings**.
+4. Use Xia Director. Select **Sign out** in the same panel to disconnect, or choose another Agent model mode and save to change billing routes.
+
+ChatGPT plan uses eligible plan allowance and any credits you permit for DramaClaw. Review those permissions in [ChatGPT usage settings](https://chatgpt.com/settings/usage). When access expires, sign in again. If a usage limit is reached, Director stops and shows the plan error.
 
 Secrets remain in the local CE settings database and are returned to the browser only as a masked preview. Changing the third-party endpoint requires entering the API Key again, which prevents a saved credential from being sent to a different host accidentally. Select **Follow current channel** to restore the existing Official, Custom, or Hybrid routing behavior.
 

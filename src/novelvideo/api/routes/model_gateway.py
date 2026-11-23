@@ -6,13 +6,14 @@ import asyncio
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from novelvideo import config as app_config
 from novelvideo.chat.codex_app_server import restart_shared_codex_runtime_when_idle
 from novelvideo.model_gateway_settings import (
     AGENT_LLM_MODE_INHERIT,
+    AGENT_LLM_MODE_CHATGPT_PLAN,
     AGENT_LLM_MODE_THIRD_PARTY,
     MODE_CUSTOM,
     CUSTOM_LLM_MODE_ADVANCED,
@@ -198,6 +199,12 @@ class AgentLlmConfigBody(BaseModel):
     base_url: str | None = Field(default=None, alias="baseUrl")
     api_key: str | None = Field(default=None, alias="apiKey")
     model: str | None = None
+    reasoning_effort: str | None = Field(default=None, alias="reasoningEffort")
+
+
+class ChatGPTPlanSignInBody(BaseModel):
+    profile_id: str | None = Field(default=None, alias="profileId")
+    reconsent: bool = False
 
 
 class MediaRelayConfigBody(BaseModel):
@@ -691,13 +698,30 @@ async def save_official_gateway_config(body: OfficialGatewayBody) -> dict[str, A
 
 
 @router.post("/agent/config")
-async def save_agent_gateway_config(body: AgentLlmConfigBody) -> dict[str, Any]:
+async def save_agent_gateway_config(body: AgentLlmConfigBody, request: Request) -> dict[str, Any]:
     """Save the CE Agent route independently from media gateway selection."""
-    try:
-        require_ce_gateway_management()
-    except PermissionError as exc:
-        raise _permission_error(exc) from exc
-    if body.mode not in {AGENT_LLM_MODE_INHERIT, AGENT_LLM_MODE_THIRD_PARTY}:
+    if body.mode == AGENT_LLM_MODE_CHATGPT_PLAN:
+        from novelvideo.chat.chatgpt_plan import SESSION, PlanError
+
+        _require_local_chatgpt_plan(request)
+        model = (body.model or "").strip()
+        try:
+            models = await asyncio.to_thread(SESSION.models)
+        except PlanError as exc:
+            raise _chatgpt_plan_error(exc) from None
+        choice = next((item for item in models if item["id"] == model), None)
+        if choice is None:
+            raise HTTPException(status_code=400, detail="Choose an available ChatGPT plan model.")
+        effort = (body.reasoning_effort or "").strip()
+        if effort and effort not in choice["reasoningEfforts"]:
+            raise HTTPException(status_code=400, detail="Choose a reasoning effort supported by the selected model.")
+        save_agent_llm_config(mode=body.mode, model=model, reasoning_effort=effort or choice["defaultReasoningEffort"])
+    elif body.mode in {AGENT_LLM_MODE_INHERIT, AGENT_LLM_MODE_THIRD_PARTY}:
+        try:
+            require_ce_gateway_management()
+        except PermissionError as exc:
+            raise _permission_error(exc) from exc
+    else:
         raise HTTPException(status_code=400, detail="unsupported Agent LLM mode")
 
     if body.mode == AGENT_LLM_MODE_THIRD_PARTY:
@@ -722,10 +746,12 @@ async def save_agent_gateway_config(body: AgentLlmConfigBody) -> dict[str, Any]:
             api_key=api_key,
             model=model,
         )
-    else:
+    elif body.mode == AGENT_LLM_MODE_INHERIT:
         save_agent_llm_config(mode=body.mode)
 
-    runtime = _refresh_runtime_after_gateway_write()
+    runtime = (
+        {} if body.mode == AGENT_LLM_MODE_CHATGPT_PLAN else _refresh_runtime_after_gateway_write()
+    )
     return {
         "ok": True,
         "data": build_model_gateway_status(
@@ -734,6 +760,68 @@ async def save_agent_gateway_config(body: AgentLlmConfigBody) -> dict[str, Any]:
         ),
         "runtime": runtime,
     }
+
+
+def _require_local_chatgpt_plan(request: Request) -> None:
+    from novelvideo.chat.chatgpt_plan import available, is_local_connection
+
+    if (
+        not available()
+        or not is_local_connection(request)
+        or request.headers.get("x-dramaclaw-local") != "1"
+    ):
+        raise HTTPException(status_code=403, detail="ChatGPT plan is available in local DramaClaw with Codex.")
+
+
+def _chatgpt_plan_error(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=409, detail=str(exc), headers={"Cache-Control": "no-store"})
+
+
+@router.get("/agent/chatgpt-plan")
+def chatgpt_plan_status(request: Request) -> dict[str, Any]:
+    from novelvideo.chat.chatgpt_plan import SESSION, PlanError
+
+    _require_local_chatgpt_plan(request)
+    try:
+        return {"ok": True, "data": SESSION.status()}
+    except PlanError as exc:
+        raise _chatgpt_plan_error(exc) from None
+
+
+@router.post("/agent/chatgpt-plan/sign-in")
+def chatgpt_plan_sign_in(request: Request, body: ChatGPTPlanSignInBody) -> dict[str, Any]:
+    from novelvideo.chat.chatgpt_plan import SESSION, PlanError
+
+    _require_local_chatgpt_plan(request)
+    try:
+        SESSION.start_sign_in(body.profile_id, reconsent=body.reconsent)
+        return {"ok": True, "data": SESSION.status()}
+    except PlanError as exc:
+        raise _chatgpt_plan_error(exc) from None
+
+
+@router.get("/agent/chatgpt-plan/models")
+def chatgpt_plan_models(request: Request) -> dict[str, Any]:
+    from novelvideo.chat.chatgpt_plan import SESSION, PlanError
+
+    _require_local_chatgpt_plan(request)
+    try:
+        return {"ok": True, "data": SESSION.models()}
+    except PlanError as exc:
+        raise _chatgpt_plan_error(exc) from None
+
+
+@router.post("/agent/chatgpt-plan/sign-out")
+def chatgpt_plan_sign_out(request: Request) -> dict[str, Any]:
+    from novelvideo.chat.chatgpt_plan import SESSION, PlanError
+    from novelvideo.chat.codex_app_server import stop_chatgpt_plan_runtime
+
+    _require_local_chatgpt_plan(request)
+    try:
+        SESSION.disconnect(stop_chatgpt_plan_runtime)
+        return {"ok": True, "data": SESSION.status()}
+    except PlanError as exc:
+        raise _chatgpt_plan_error(exc) from None
 
 
 @router.post("/custom/brainclaw/config")

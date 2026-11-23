@@ -126,6 +126,28 @@ def unregister_live_codex_turn(thread_id: str, turn_id: str) -> None:
         _LIVE_CODEX_TURNS.pop(key, None)
 
 
+def _live_plan_client(thread_id: str) -> Any | None:
+    from novelvideo.chat.chatgpt_plan import APP_NAME
+
+    with _LIVE_CODEX_TURNS_LOCK:
+        return next(
+            (
+                getattr(handle, "_client", None)
+                for (live_thread, _), handle in _LIVE_CODEX_TURNS.items()
+                if live_thread == thread_id
+                and getattr(getattr(getattr(handle, "_client", None), "config", None),
+                            "client_name", None) == APP_NAME
+            ),
+            None,
+        )
+
+
+def live_plan_thread(thread_id: str, *, include_turns: bool = False) -> Any | None:
+    """Read a plan thread from its stdio owner while the turn is active."""
+    client = _live_plan_client(thread_id)
+    return client.thread_read(thread_id, include_turns=include_turns).thread if client else None
+
+
 def detach_live_codex_turn(thread_id: str, turn_id: str) -> None:
     key = (str(thread_id or "").strip(), str(turn_id or "").strip())
     with _LIVE_CODEX_TURNS_LOCK:
@@ -1460,6 +1482,8 @@ def read_codex_thread_history(
     )
     from novelvideo.chat.codex_history import HISTORY_CACHE
 
+    if (client := _live_plan_client(thread_id)) is not None:
+        return HISTORY_CACHE.read_page(client, thread_id, before=before)
     config = _codex_runtime_config(
         codex_bin=codex_bin, cwd=cwd, env=env, config_overrides=config_overrides
     )
@@ -2180,6 +2204,44 @@ def _codex_turn_completed_event(
     )
 
 
+class _LivePlanTurn:
+    """Replay recent events without reading the stdio stream a second time."""
+
+    def __init__(self) -> None:
+        from collections import deque
+
+        self.events: deque[ChatBackendEvent] = deque(maxlen=4096)
+        self.readers: set[asyncio.Queue[ChatBackendEvent | None]] = set()
+
+    def publish(self, event: ChatBackendEvent | None) -> None:
+        if event is not None:
+            self.events.append(event)
+        for reader in self.readers:
+            reader.put_nowait(event)
+
+
+_LIVE_PLAN_TURNS: dict[tuple[str, str], _LivePlanTurn] = {}
+
+
+async def follow_live_plan_turn(thread_id: str, turn_id: str) -> AsyncIterator[ChatBackendEvent]:
+    from novelvideo.chat.codex_app_server import CodexAppServerNotRunning
+
+    live = _LIVE_PLAN_TURNS.get((thread_id, turn_id))
+    if live is None:
+        raise CodexAppServerNotRunning("ChatGPT plan turn is no longer active")
+    reader: asyncio.Queue[ChatBackendEvent | None] = asyncio.Queue()
+    for event in live.events:
+        reader.put_nowait(event)
+    live.readers.add(reader)
+    try:
+        while (event := await reader.get()) is not None:
+            yield event
+            if event.type == "turn_completed":
+                return
+    finally:
+        live.readers.discard(reader)
+
+
 async def follow_codex_turn(
     *,
     codex_bin: Path | None,
@@ -2357,6 +2419,12 @@ class CodexThread:
         self._retry_allowed = retry_allowed
         self.id = thread_id
 
+    @property
+    def uses_chatgpt_plan(self) -> bool:
+        from novelvideo.chat.chatgpt_plan import PROVIDER
+
+        return self._model_provider == PROVIDER
+
     async def stream(
         self, prompt: str, *, image_paths: Sequence[Path] = ()
     ) -> AsyncIterator[ChatBackendEvent]:
@@ -2406,20 +2474,33 @@ class CodexThread:
         self, prompt: str, *, image_paths: Sequence[Path], config: Any,
         attempt: _CodexAttempt, is_retry: bool, stream_started_at: float,
     ) -> AsyncIterator[ChatBackendEvent]:
+        from novelvideo.chat.chatgpt_plan import PlanError
+
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
         current_turn_id: str | None = None
+        plan_turn = _LivePlanTurn() if self.uses_chatgpt_plan else None
+
+        def deliver(kind: str, payload: Any) -> None:
+            if plan_turn is not None and kind == "event":
+                if payload.type == "thread_started":
+                    _LIVE_PLAN_TURNS[(payload.thread_id, payload.turn_id)] = plan_turn
+                plan_turn.publish(payload)
+            queue.put_nowait((kind, payload))
 
         def emit(kind: str, payload: Any) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, (kind, payload))
+            loop.call_soon_threadsafe(deliver, kind, payload)
 
         def worker() -> None:
+            from contextlib import ExitStack
+
             from openai_codex import (
                 ApprovalMode,
                 Sandbox,
             )
-            from novelvideo.chat.codex_app_server import shared_codex
-            from openai_codex.generated.v2_all import TurnCompletedNotification, TurnStatus
+            from novelvideo.chat.chatgpt_plan import SESSION
+            from novelvideo.chat.codex_app_server import chatgpt_plan_codex, shared_codex
+            from openai_codex.generated.v2_all import ErrorNotification, TurnCompletedNotification, TurnStatus
 
             if self._codex_bin is not None and not self._codex_bin.exists():
                 raise RuntimeError(f"Codex binary not found: {self._codex_bin}")
@@ -2427,7 +2508,12 @@ class CodexThread:
             final_response: str | None = None
             final_disposition: str | None = None
 
-            with shared_codex(config) as codex:
+            with ExitStack() as stack:
+                plan_token = None
+                if plan_turn is not None:
+                    codex, plan_token = stack.enter_context(chatgpt_plan_codex(config))
+                else:
+                    codex = stack.enter_context(shared_codex(config))
                 thread_options = {
                     # The only pre-approved tools belong to DramaClaw's
                     # project-scoped MCP server. Keep the global policy at
@@ -2474,8 +2560,20 @@ class CodexThread:
                     ),
                 )
                 try:
+                    last_plan_error = ""
                     for event in turn.stream():
                         payload = event.payload
+                        if plan_token is not None:
+                            if isinstance(payload, ErrorNotification):
+                                last_plan_error = _codex_error_text(_codex_jsonable(payload.error))
+                                continue
+                            if isinstance(payload, TurnCompletedNotification) and (
+                                payload.turn.id == turn.id and payload.turn.status == TurnStatus.failed
+                            ):
+                                failure = _codex_error_text(_codex_jsonable(payload.turn.error))
+                                if not _is_malformed_tool_call_error(failure):
+                                    raise SESSION.inference_error(plan_token, f"{failure}\n{last_plan_error}")
+                                continue
                         for mapped in mapper.map(event):
                             emit("event", mapped)
                     if (
@@ -2563,7 +2661,19 @@ class CodexThread:
                     return
                 # Keep the exception object: the chat route maps a busy thread
                 # onto its existing "turn still running" UX by type.
+                if plan_turn is not None:
+                    if not isinstance(exc, (PlanError, CodexThreadBusyError, CodexMalformedToolCallError)):
+                        exc = PlanError("runtime_error", "The ChatGPT plan Codex runtime interrupted the Director request.")
+                    if self.id and current_turn_id:
+                        plan_turn.publish(_codex_turn_completed_event(
+                            self.id, current_turn_id, "failed",
+                            {"kind": getattr(exc, "code", "runtime_error"), "message": str(exc)},
+                        ))
                 await queue.put(("error", exc))
+            finally:
+                if plan_turn is not None:
+                    plan_turn.publish(None)
+                    _LIVE_PLAN_TURNS.pop((self.id, current_turn_id), None)
 
         worker_task = asyncio.create_task(run_worker())
         started_at = loop.time()
@@ -2654,7 +2764,7 @@ class CodexThread:
                             yield event
                     break
                 if kind == "error":
-                    if isinstance(payload, (CodexThreadBusyError, CodexMalformedToolCallError)):
+                    if isinstance(payload, (CodexThreadBusyError, CodexMalformedToolCallError, PlanError)):
                         raise payload
                     raise RuntimeError(str(payload))
                 event = payload

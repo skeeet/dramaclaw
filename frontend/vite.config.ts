@@ -160,6 +160,20 @@ export default defineConfig(({ mode }) => {
           target: apiTarget,
           changeOrigin: true,
         },
+        "^/api/v1/(model-gateway/agent(?:/|$)|chat/ws(?:[?]|$)|projects/[^/]+/chat/director-auto/(start|resume)(?:[?]|$))": {
+          target: apiTarget,
+          ws: true,
+          // Preserve the browser origin and the actual peer for local plan access checks.
+          changeOrigin: false,
+          configure: (proxy) => {
+            proxy.on("proxyReq", (outgoing, incoming) => {
+              outgoing.setHeader("X-Forwarded-For", incoming.socket.remoteAddress ?? "");
+            });
+            proxy.on("proxyReqWs", (outgoing, incoming) => {
+              outgoing.setHeader("X-Forwarded-For", incoming.socket.remoteAddress ?? "");
+            });
+          },
+        },
         "/api/v1": {
           target: apiTarget,
           changeOrigin: true,

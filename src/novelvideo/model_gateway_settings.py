@@ -49,7 +49,10 @@ VALID_CUSTOM_LLM_MODES = {
 }
 AGENT_LLM_MODE_INHERIT = "inherit"
 AGENT_LLM_MODE_THIRD_PARTY = "third_party"
-VALID_AGENT_LLM_MODES = {AGENT_LLM_MODE_INHERIT, AGENT_LLM_MODE_THIRD_PARTY}
+AGENT_LLM_MODE_CHATGPT_PLAN = "chatgpt_plan"
+VALID_AGENT_LLM_MODES = {
+    AGENT_LLM_MODE_INHERIT, AGENT_LLM_MODE_THIRD_PARTY, AGENT_LLM_MODE_CHATGPT_PLAN,
+}
 PLACEHOLDER_API_KEYS = {
     "your_newapi_token",
     "your_model_api_key",
@@ -284,7 +287,7 @@ def save_relayclaw_brainclaw_key(
 
 
 def save_agent_llm_config(
-    *, mode: str, base_url: str = "", api_key: str = "", model: str = ""
+    *, mode: str, base_url: str = "", api_key: str = "", model: str = "", reasoning_effort: str = "",
 ) -> None:
     """Persist an Agent-only LLM route without changing media gateway mode."""
     normalized_mode = normalize_agent_llm_mode(mode)
@@ -299,6 +302,9 @@ def save_agent_llm_config(
             values["agent_llm_api_key"] = clean_api_key
         if clean_model:
             values["agent_llm_model"] = clean_model
+    elif normalized_mode == AGENT_LLM_MODE_CHATGPT_PLAN:
+        values["agent_chatgpt_plan_model"] = model.strip()
+        values["agent_chatgpt_plan_effort"] = reasoning_effort.strip()
     _write_many(values)
 
 
@@ -1224,6 +1230,19 @@ def get_effective_llm_config() -> EffectiveLlmConfig:
     )
 
 
+def get_director_chatgpt_plan_config() -> tuple[str, str] | None:
+    """Return the Director-only model and effort when ChatGPT plan is selected."""
+    if not _uses_ce_gateway_settings():
+        return None
+    settings = get_model_gateway_settings()
+    if settings.get("agent_llm_mode") == AGENT_LLM_MODE_CHATGPT_PLAN:
+        return (
+            str(settings.get("agent_chatgpt_plan_model", "")).strip(),
+            str(settings.get("agent_chatgpt_plan_effort", "")).strip(),
+        )
+    return None
+
+
 def get_effective_agent_llm_config() -> EffectiveLlmConfig:
     """Resolve the Agent-only LLM route without affecting business text models."""
     if not _uses_ce_gateway_settings():
@@ -1492,6 +1511,7 @@ def build_model_gateway_status(
     )
     agent_llm_api_key = normalize_api_key(settings.get("agent_llm_api_key", ""))
     agent_llm_model = str(settings.get("agent_llm_model", "")).strip()
+    from novelvideo.chat.chatgpt_plan import available as chatgpt_plan_available
     custom_llm_mode = normalize_custom_llm_mode(settings.get("custom_llm_mode"))
     brainclaw_base_url = normalize_relay_base_url(
         settings.get("brainclaw_newapi_base_url", "") or OFFICIAL_NEWAPI_BASE_URL
@@ -1523,6 +1543,9 @@ def build_model_gateway_status(
         },
         "agent": {
             "mode": agent_llm_mode,
+            "chatgptPlanAvailable": chatgpt_plan_available(),
+            "chatgptPlanModel": str(settings.get("agent_chatgpt_plan_model", "")).strip(),
+            "chatgptPlanEffort": str(settings.get("agent_chatgpt_plan_effort", "")).strip(),
             "baseUrl": agent_llm_base_url,
             "apiKeyPreview": mask_secret(agent_llm_api_key),
             "model": agent_llm_model,

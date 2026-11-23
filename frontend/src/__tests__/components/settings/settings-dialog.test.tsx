@@ -9,6 +9,7 @@ import ky from "ky";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { DEFAULT_MEDIA_STORAGE_SETTINGS, useSettingsStore } from "@/stores/settingsStore";
 import { enT, zhT } from "@/__tests__/helpers/i18n-fixtures";
+import { api } from "@/lib/api";
 
 const runtimeState = vi.hoisted(() => ({ isCeRuntime: true }));
 const localeState = vi.hoisted(() => ({ language: "zh" }));
@@ -140,7 +141,9 @@ vi.mock("react-i18next", async () => {
         sharedCount?: number;
       },
     ) =>
-      key.startsWith("settings.mediaStorage.errors.")
+      key.startsWith("settings.modelConfig.agent.chatgpt.")
+        ? enT(key, options)
+        : key.startsWith("settings.mediaStorage.errors.")
         ? (localeState.language === "en" ? enT : zhT)(key, options)
         : ({
         "settings.title": "功能设置",
@@ -755,6 +758,60 @@ describe("SettingsDialog pages", () => {
         model: "vendor-agent-model",
       });
     });
+  });
+
+  it("connects ChatGPT, saves the selected model and effort, and signs out", async () => {
+    const gateway = { source: "official", baseUrl: "https://relay.example/v1", apiKeyPreview: "", configured: false };
+    modelGatewayMocks.config = {
+      mode: "official",
+      effective: gateway,
+      llmEffective: { ...gateway, mode: "official", model: "brainclaw", brainclaw: true },
+      official: { ...gateway, environment: gateway },
+      custom: { ...gateway, llmMode: "advanced" },
+      agent: { mode: "inherit", baseUrl: "", apiKeyPreview: "", configured: false, model: "", chatgptPlanAvailable: true },
+    };
+    modelGatewayMocks.saveAgent.mockResolvedValue({ ok: true, data: modelGatewayMocks.config });
+    const disconnected = {
+      status: "disconnected", sharing: false, activeProfileId: null, profiles: [], message: null,
+    };
+    const connected = {
+      status: "connected", sharing: true, activeProfileId: "profile",
+      profiles: [{ id: "profile", label: "Connection 1", email: "director@example.com" }], message: null,
+    };
+    const requests: string[] = [];
+    const respond = (url: string) => {
+      const action = url.split("/").pop();
+      requests.push(action ?? "");
+      const data = action === "sign-in"
+        ? connected
+        : action === "models"
+          ? [{ id: "gpt-6.2-sol", label: "GPT-6.2-Sol", reasoningEfforts: ["low", "max"], defaultReasoningEffort: "low" }]
+          : disconnected;
+      return { json: async () => ({ ok: true, data }) } as ReturnType<typeof api.get>;
+    };
+    const getMock = vi.spyOn(api, "get").mockImplementation((url) => respond(String(url)));
+    const postMock = vi.spyOn(api, "post").mockImplementation((url) => respond(String(url)));
+    try {
+      renderSettingsDialog();
+      fireEvent.click(screen.getByRole("tab", { name: "ChatGPT plan" }));
+      const signIn = await screen.findByRole("button", { name: "Continue with ChatGPT" });
+      await waitFor(() => expect(signIn).toBeEnabled());
+      fireEvent.click(signIn);
+      await screen.findByRole("option", { name: "GPT-6.2-Sol" });
+      fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "gpt-6.2-sol" } });
+      fireEvent.change(screen.getByLabelText("Reasoning effort"), { target: { value: "max" } });
+      expect(screen.queryByRole("option", { name: "Ultra" })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "保存 Agent 配置" }));
+      await waitFor(() => expect(modelGatewayMocks.saveAgent).toHaveBeenCalledWith({
+        mode: "chatgpt_plan", model: "gpt-6.2-sol", reasoningEffort: "max",
+      }));
+      fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+      await screen.findByText("ChatGPT is disconnected.");
+      expect(requests).toContain("sign-out");
+    } finally {
+      getMock.mockRestore();
+      postMock.mockRestore();
+    }
   });
 
   it("lets BrainClaw use an editable NewAPI endpoint in custom mode", async () => {

@@ -35,6 +35,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { ChatGPTPlanPanel, useChatGPTPlan } from "@/components/settings/chatgpt-plan";
 import { Input } from "@/components/ui/input";
 import {
   ChannelModelInput,
@@ -774,12 +775,19 @@ function AgentLlmPanel({
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState(saved?.model ?? "");
   const [revealKey, setRevealKey] = useState(false);
+  const [planModel, setPlanModel] = useState(saved?.chatgptPlanModel ?? "");
+  const [planEffort, setPlanEffort] = useState(saved?.chatgptPlanEffort ?? "");
+  const plan = useChatGPTPlan(mode === "chatgpt_plan" && saved?.chatgptPlanAvailable === true);
+  const selectedPlanModel = plan.models.data?.find(({ id }) => id === planModel);
+  const selectedPlanEffort = selectedPlanModel?.reasoningEfforts.includes(planEffort) ? planEffort : "";
 
   useEffect(() => {
     if (!saved) return;
     setMode(saved.mode);
     setBaseUrl(saved.baseUrl);
     setModel(saved.model);
+    setPlanModel(saved.chatgptPlanModel ?? "");
+    setPlanEffort(saved.chatgptPlanEffort ?? "");
   }, [saved]);
 
   const endpointChanged = Boolean(
@@ -794,14 +802,16 @@ function AgentLlmPanel({
   const handleSave = async () => {
     try {
       const response = await saveAgent.mutateAsync(
-        mode === "inherit"
-          ? { mode }
-          : {
+        mode === "third_party"
+          ? {
               mode,
               baseUrl: baseUrl.trim(),
               model: model.trim(),
               ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
-            },
+            }
+          : mode === "chatgpt_plan"
+            ? { mode, model: selectedPlanModel?.id, reasoningEffort: selectedPlanEffort }
+            : { mode },
       );
       if (!response.ok) {
         toast.error(
@@ -838,6 +848,11 @@ function AgentLlmPanel({
             <TabsTrigger value="third_party">
               {t("settings.modelConfig.agent.thirdParty")}
             </TabsTrigger>
+            {saved?.chatgptPlanAvailable || mode === "chatgpt_plan" ? (
+              <TabsTrigger value="chatgpt_plan">
+                {t("settings.modelConfig.agent.chatgpt.title")}
+              </TabsTrigger>
+            ) : null}
           </TabsList>
         </Tabs>
       </div>
@@ -927,6 +942,19 @@ function AgentLlmPanel({
           </p>
         </div>
       ) : null}
+      {mode === "chatgpt_plan" && (
+        saved?.chatgptPlanAvailable ? (
+          <ChatGPTPlanPanel
+            plan={plan} model={selectedPlanModel?.id ?? ""}
+            setModel={(value) => { setPlanModel(value); setPlanEffort(""); }}
+            effort={selectedPlanEffort} setEffort={setPlanEffort}
+          />
+        ) : (
+          <p className="mt-3 text-xs text-muted-foreground">
+            {t("settings.modelConfig.agent.chatgpt.unavailable")}
+          </p>
+        )
+      )}
 
       <div className="mt-3 flex justify-end">
         <Button
@@ -936,6 +964,7 @@ function AgentLlmPanel({
           disabled={
             loading ||
             saveAgent.isPending ||
+            (mode === "chatgpt_plan" && (!plan.connected || !selectedPlanModel || plan.connection.isPending)) ||
             (mode === "third_party" && !thirdPartyReady)
           }
         >
